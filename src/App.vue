@@ -21,6 +21,8 @@ type UploadedImage = {
   name: string
   url: string
   analysis: string
+  analyzing: boolean
+  error?: string
 }
 
 type GenerateResponse = {
@@ -149,6 +151,8 @@ const imageSummary = computed(() => {
 })
 
 const canGenerate = computed(() => Boolean(selectedMerchant.value && experience.orderedItems.trim() && !generating.value))
+const analyzingImageCount = computed(() => images.value.filter((image) => image.analyzing).length)
+const hasAnalyzedImages = computed(() => images.value.some((image) => image.analysis && !image.analyzing))
 
 const fallbackTitle = computed(() => {
   if (!selectedMerchant.value) return ''
@@ -315,18 +319,65 @@ async function searchMerchants(useMapLocation = false) {
   }
 }
 
+async function compressImage(file: File) {
+  const dataUrl = await new Promise<string>((resolveRead, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolveRead(String(reader.result))
+    reader.onerror = () => reject(new Error('图片读取失败'))
+    reader.readAsDataURL(file)
+  })
+
+  const image = await new Promise<HTMLImageElement>((resolveImage, reject) => {
+    const img = new Image()
+    img.onload = () => resolveImage(img)
+    img.onerror = () => reject(new Error('图片加载失败'))
+    img.src = dataUrl
+  })
+
+  const maxSize = 1280
+  const scale = Math.min(1, maxSize / Math.max(image.width, image.height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.round(image.width * scale)
+  canvas.height = Math.round(image.height * scale)
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('图片压缩失败')
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  return canvas.toDataURL('image/jpeg', 0.78)
+}
+
+async function analyzeUploadedImage(image: UploadedImage, file: File) {
+  try {
+    const compressedImage = await compressImage(file)
+    const response = await fetch('/api/images/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileName: file.name, image: compressedImage }),
+    })
+    const data = await response.json() as { analysis?: string; message?: string }
+    if (!response.ok) throw new Error(data.message || '图片识别失败')
+    image.analysis = data.analysis || '图片已上传，但未识别到明确内容。'
+  } catch (error) {
+    image.error = error instanceof Error ? error.message : '图片识别失败'
+    image.analysis = '图片已上传，但识别失败。你可以在补充体验里手动描述这张图。'
+  } finally {
+    image.analyzing = false
+  }
+}
+
 function handleImageUpload(event: Event) {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files || [])
   files.forEach((file) => {
     const url = URL.createObjectURL(file)
-    const lowerName = file.name.toLowerCase()
-    const analysis = lowerName.includes('menu') || lowerName.includes('菜单')
-      ? '这张图可能是菜单或价格信息，适合补充消费参考'
-      : lowerName.includes('shop') || lowerName.includes('店')
-        ? '这张图可能是门店或环境照片，适合描述空间氛围'
-        : '这张图可以作为菜品、饮品或环境素材，建议结合真实体验描述'
-    images.value.push({ id: Date.now() + Math.random(), name: file.name, url, analysis })
+    const image: UploadedImage = {
+      id: Date.now() + Math.random(),
+      name: file.name,
+      url,
+      analysis: '正在调用大模型识别图片内容...',
+      analyzing: true,
+    }
+    images.value.push(image)
+    analyzeUploadedImage(image, file)
   })
   input.value = ''
 }
@@ -347,7 +398,7 @@ async function generate() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         merchant: selectedMerchant.value,
-        images: images.value.map((image) => ({ name: image.name, analysis: image.analysis })),
+        images: images.value.map((image) => ({ name: image.name, analysis: image.analysis, status: image.error ? '识别失败' : '已识别' })),
         imageSummary: imageSummary.value,
         experience,
       }),
@@ -500,21 +551,26 @@ onMounted(() => {
           <p class="eyebrow">Step 2</p>
           <h2>上传图片素材</h2>
         </div>
-        <span class="hint">最多建议 9 张</span>
+        <span class="hint">{{ analyzingImageCount ? `识别中 ${analyzingImageCount} 张` : hasAnalyzedImages ? '已生成图片素材' : '最多建议 9 张' }}</span>
       </div>
       <label class="upload-box">
         <input type="file" multiple accept="image/*" @change="handleImageUpload" />
-        <span>点击上传门头、环境、菜品、菜单图片</span>
+        <span>点击上传图片，上传后会立即调用大模型识别图片内容</span>
       </label>
       <div v-if="images.length" class="image-grid">
         <article v-for="image in images" :key="image.id" class="image-card">
           <img :src="image.url" :alt="image.name" />
           <div>
             <strong>{{ image.name }}</strong>
-            <p>{{ image.analysis }}</p>
+            <p :class="{ 'analyzing-text': image.analyzing }">{{ image.analysis }}</p>
+            <p v-if="image.error" class="image-error-tip">{{ image.error }}</p>
             <button class="text-btn" @click="removeImage(image.id)">删除</button>
           </div>
         </article>
+      </div>
+      <div v-if="images.length" class="image-material-summary">
+        <strong>图片素材摘要</strong>
+        <p>{{ imageSummary }}</p>
       </div>
       <button class="primary-btn full" @click="goTo('experience')">继续填写体验</button>
     </section>

@@ -38,7 +38,7 @@ function readBody(req) {
     let body = ''
     req.on('data', (chunk) => {
       body += chunk
-      if (body.length > 1024 * 1024) {
+      if (body.length > 8 * 1024 * 1024) {
         req.destroy()
         reject(new Error('请求体过大'))
       }
@@ -72,6 +72,19 @@ function normalizePoi(poi, index) {
     tags: tags.length ? tags : ['附近商户'],
     location: poi.location || '',
   }
+}
+
+function buildImagePrompt(fileName) {
+  return `你是一个探店图片分析助手。请根据图片内容提取可用于真实探店评价和探店笔记的素材。
+
+要求：
+1. 只描述图片中能明确看到的内容。
+2. 不要编造品牌、门店名、价格、口味、服务体验。
+3. 如果无法判断菜名，请用通用描述。
+4. 输出一段 60 到 120 字的中文描述，口吻客观自然。
+5. 可以包含：菜品/饮品/环境/菜单/门头/氛围/适合写作角度。
+
+图片文件名：${fileName || '未命名图片'}`
 }
 
 function buildPrompt(payload) {
@@ -129,6 +142,45 @@ async function searchPoi(req, res) {
   sendJson(res, 200, { merchants: (data.pois || []).map(normalizePoi) })
 }
 
+async function analyzeImage(req, res) {
+  if (!openaiBaseUrl || !openaiApiKey) return sendJson(res, 500, { message: '缺少大模型接口配置' })
+  const body = await readBody(req)
+  const image = body.image || ''
+  const fileName = body.fileName || ''
+  if (!image || typeof image !== 'string' || !image.startsWith('data:image/')) {
+    return sendJson(res, 400, { message: '缺少有效图片数据' })
+  }
+
+  const response = await fetch(`${openaiBaseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${openaiApiKey}`,
+    },
+    body: JSON.stringify({
+      model: openaiModel,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: buildImagePrompt(fileName) },
+            { type: 'image_url', image_url: { url: image } },
+          ],
+        },
+      ],
+    }),
+  })
+
+  const data = await response.json()
+  if (!response.ok) {
+    return sendJson(res, response.status, { message: data.error?.message || '图片识别失败' })
+  }
+
+  const analysis = data.choices?.[0]?.message?.content?.trim() || '图片已上传，但未识别到明确内容。'
+  sendJson(res, 200, { analysis })
+}
+
 async function generateContent(req, res) {
   if (!openaiBaseUrl || !openaiApiKey) return sendJson(res, 500, { message: '缺少大模型接口配置' })
   const body = await readBody(req)
@@ -178,6 +230,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`)
     if (req.method === 'GET' && url.pathname === '/api/poi/search') return searchPoi(req, res)
+    if (req.method === 'POST' && url.pathname === '/api/images/analyze') return analyzeImage(req, res)
     if (req.method === 'POST' && url.pathname === '/api/content/generate') return generateContent(req, res)
     sendJson(res, 404, { message: '接口不存在' })
   } catch (error) {

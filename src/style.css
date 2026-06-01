@@ -523,6 +523,31 @@ h3 {
   object-fit: cover;
 }
 
+.analyzing-text {
+  color: #b45309;
+}
+
+.image-error-tip {
+  margin-top: 6px;
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.image-material-summary {
+  margin-top: 14px;
+  border: 1px solid #f1e0c9;
+  border-radius: 18px;
+  padding: 12px;
+  background: #fffaf4;
+}
+
+.image-material-summary p {
+  margin: 6px 0 0;
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
 .text-btn {
   margin-top: 8px;
   padding: 0;
