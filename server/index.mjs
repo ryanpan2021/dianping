@@ -1,0 +1,190 @@
+import http from 'node:http'
+import { URL } from 'node:url'
+import { readFileSync, existsSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+const envPath = resolve(process.cwd(), '.env')
+if (existsSync(envPath)) {
+  const lines = readFileSync(envPath, 'utf8').split('\n')
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const index = trimmed.indexOf('=')
+    if (index === -1) continue
+    const key = trimmed.slice(0, index)
+    const value = trimmed.slice(index + 1)
+    process.env[key] = process.env[key] || value
+  }
+}
+
+const port = Number(process.env.PORT || 8787)
+const amapKey = process.env.AMAP_WEB_SERVICE_KEY
+const openaiBaseUrl = (process.env.OPENAI_BASE_URL || '').replace(/\/$/, '')
+const openaiApiKey = process.env.OPENAI_API_KEY
+const openaiModel = process.env.OPENAI_MODEL || 'gpt-4o-mini'
+
+function sendJson(res, status, data) {
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+  })
+  res.end(JSON.stringify(data))
+}
+
+function readBody(req) {
+  return new Promise((resolveBody, reject) => {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > 1024 * 1024) {
+        req.destroy()
+        reject(new Error('请求体过大'))
+      }
+    })
+    req.on('end', () => {
+      if (!body) return resolveBody({})
+      try {
+        resolveBody(JSON.parse(body))
+      } catch {
+        reject(new Error('JSON 格式错误'))
+      }
+    })
+  })
+}
+
+function normalizePoi(poi, index) {
+  const cost = poi.biz_ext?.cost || poi.biz_ext?.rating || ''
+  const tags = String(poi.type || '')
+    .split(';')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+  return {
+    id: Number(poi.id?.replace(/\D/g, '').slice(-8)) || index + 1,
+    sourceId: poi.id,
+    name: poi.name || '未命名门店',
+    address: typeof poi.address === 'string' && poi.address ? poi.address : '暂无详细地址',
+    category: tags[0] || '商户',
+    avgPrice: Number(cost) || 0,
+    distance: poi.distance ? `${poi.distance}m` : '距离未知',
+    tags: tags.length ? tags : ['附近商户'],
+    location: poi.location || '',
+  }
+}
+
+function buildPrompt(payload) {
+  return `你是一个真实、克制、自然的探店内容草稿助手。请基于用户真实输入生成内容，禁止虚构未提供的体验，禁止自动伪造好评，避免广告腔和绝对化表达。
+
+请输出严格 JSON，不要输出 Markdown，不要输出解释。JSON 格式如下：
+{
+  "title": "探店笔记标题",
+  "review": "大众点评评价草稿",
+  "note": "探店笔记正文",
+  "tags": ["标签1", "标签2"]
+}
+
+写作要求：
+1. 只能使用素材中提供的信息。
+2. 如果信息不足，表达要克制，不要编造服务、口味、排队、价格。
+3. 用户选择的文风是：${payload.experience?.style || '真实自然'}。
+4. 内容类型是：${payload.experience?.contentType || 'both'}。
+5. 大众点评评价偏实用真实，探店笔记偏分享但不要过度营销。
+6. 如果用户提供不足之处，要自然写入以增强真实感。
+7. 生成内容为草稿，适合用户确认后发布。
+
+素材：
+${JSON.stringify(payload, null, 2)}`
+}
+
+async function searchPoi(req, res) {
+  if (!amapKey) return sendJson(res, 500, { message: '缺少高德 Web 服务 Key' })
+  const url = new URL(req.url, `http://${req.headers.host}`)
+  const keyword = url.searchParams.get('keyword') || ''
+  const city = url.searchParams.get('city') || '全国'
+  const location = url.searchParams.get('location') || ''
+  if (!keyword.trim()) return sendJson(res, 200, { merchants: [] })
+
+  const amapUrl = new URL(location ? 'https://restapi.amap.com/v3/place/around' : 'https://restapi.amap.com/v3/place/text')
+  amapUrl.searchParams.set('key', amapKey)
+  amapUrl.searchParams.set('keywords', keyword)
+  amapUrl.searchParams.set('children', '0')
+  amapUrl.searchParams.set('offset', '20')
+  amapUrl.searchParams.set('page', '1')
+  amapUrl.searchParams.set('extensions', 'all')
+  if (location) {
+    amapUrl.searchParams.set('location', location)
+    amapUrl.searchParams.set('radius', '3000')
+    amapUrl.searchParams.set('sortrule', 'distance')
+  } else {
+    amapUrl.searchParams.set('city', city)
+  }
+
+  const response = await fetch(amapUrl)
+  const data = await response.json()
+  if (data.status !== '1') {
+    return sendJson(res, 502, { message: data.info || '高德门店搜索失败', raw: data })
+  }
+  sendJson(res, 200, { merchants: (data.pois || []).map(normalizePoi) })
+}
+
+async function generateContent(req, res) {
+  if (!openaiBaseUrl || !openaiApiKey) return sendJson(res, 500, { message: '缺少大模型接口配置' })
+  const body = await readBody(req)
+  const response = await fetch(`${openaiBaseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${openaiApiKey}`,
+    },
+    body: JSON.stringify({
+      model: openaiModel,
+      temperature: 0.7,
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个帮助用户整理真实探店体验的中文写作助手。你必须输出严格 JSON。',
+        },
+        {
+          role: 'user',
+          content: buildPrompt(body),
+        },
+      ],
+    }),
+  })
+
+  const data = await response.json()
+  if (!response.ok) {
+    return sendJson(res, response.status, { message: data.error?.message || '大模型生成失败' })
+  }
+
+  const content = data.choices?.[0]?.message?.content || ''
+  const cleaned = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim()
+  try {
+    sendJson(res, 200, JSON.parse(cleaned))
+  } catch {
+    sendJson(res, 200, {
+      title: '探店内容草稿',
+      review: cleaned,
+      note: cleaned,
+      tags: [],
+    })
+  }
+}
+
+const server = http.createServer(async (req, res) => {
+  if (req.method === 'OPTIONS') return sendJson(res, 204, {})
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`)
+    if (req.method === 'GET' && url.pathname === '/api/poi/search') return searchPoi(req, res)
+    if (req.method === 'POST' && url.pathname === '/api/content/generate') return generateContent(req, res)
+    sendJson(res, 404, { message: '接口不存在' })
+  } catch (error) {
+    sendJson(res, 500, { message: error instanceof Error ? error.message : '服务异常' })
+  }
+})
+
+server.listen(port, () => {
+  console.log(`API server running at http://localhost:${port}`)
+})

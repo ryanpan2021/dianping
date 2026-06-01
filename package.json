@@ -1,0 +1,1 @@
+{"scripts":{"dev":"concurrently \"npm run dev:api\" \"npm run dev:web\"","dev:web":"vite --host 0.0.0.0","dev:api":"node server/index.mjs","build":"vite build","preview":"vite preview --host 0.0.0.0","typecheck":"vue-tsc --noEmit"},"dependencies":{"@vitejs/plugin-vue":"latest","concurrently":"^9.2.1","typescript":"latest","vite":"latest","vue":"latest","vue-tsc":"latest"}}
