@@ -60,30 +60,32 @@ declare global {
 const fallbackMerchants: Merchant[] = [
   {
     id: 1,
-    name: '梧桐街角咖啡',
-    address: '上海市徐汇区衡山路 88 号',
-    category: '咖啡厅',
-    avgPrice: 58,
-    distance: '860m',
-    tags: ['下午茶', '适合拍照', '甜品'],
+    sourceId: 'B0FFHQBRZP',
+    name: '阿姨炒粉(厚德品园店)',
+    address: '深圳市南山区桂庙新村23栋104',
+    category: '小吃快餐',
+    avgPrice: 33,
+    distance: '默认定位',
+    tags: ['大排档', '米粉', '夜宵'],
+    location: '113.930890,22.525796',
   },
   {
     id: 2,
-    name: '山城小馆',
-    address: '上海市静安区南京西路 168 号',
-    category: '川菜',
-    avgPrice: 96,
-    distance: '1.2km',
-    tags: ['朋友聚餐', '口味重', '热闹'],
+    name: '潮汕砂锅粥',
+    address: '深圳市南山区桂庙路附近',
+    category: '粥店',
+    avgPrice: 55,
+    distance: '附近',
+    tags: ['夜宵', '朋友聚餐', '热闹'],
   },
   {
     id: 3,
-    name: '青禾日料食堂',
-    address: '上海市黄浦区复兴中路 21 号',
-    category: '日料',
-    avgPrice: 128,
-    distance: '1.8km',
-    tags: ['约会', '安静', '精致'],
+    name: '社区糖水铺',
+    address: '深圳市南山区桂庙新村附近',
+    category: '甜品',
+    avgPrice: 28,
+    distance: '附近',
+    tags: ['糖水', '饭后甜品', '轻松'],
   },
 ]
 
@@ -102,10 +104,10 @@ const weakOptions = ['没有', '排队久', '上菜慢', '偏贵', '服务一般
 const sceneOptions = ['朋友聚会', '约会', '家庭聚餐', '下午茶', '商务', '一个人吃']
 
 const currentStep = ref<StepKey>('home')
-const searchKeyword = ref('咖啡')
-const city = ref('上海')
+const searchKeyword = ref('阿姨炒粉')
+const city = ref('深圳')
 const merchants = ref<Merchant[]>(fallbackMerchants)
-const selectedMerchant = ref<Merchant | null>(null)
+const selectedMerchant = ref<Merchant | null>(fallbackMerchants[0])
 const images = ref<UploadedImage[]>([])
 const copied = ref(false)
 const generatedAt = ref('')
@@ -117,7 +119,7 @@ const searching = ref(false)
 const generating = ref(false)
 const searchError = ref('')
 const generateError = ref('')
-const selectedLocation = ref<MapLngLat | null>({ lng: 121.4737, lat: 31.2304 })
+const selectedLocation = ref<MapLngLat | null>({ lng: 113.93089, lat: 22.525796 })
 const mapReady = ref(false)
 const mapLoading = ref(false)
 const mapError = ref('')
@@ -180,6 +182,9 @@ function goTo(step: StepKey) {
 
 function chooseMerchant(merchant: Merchant) {
   selectedMerchant.value = merchant
+  if (!merchant.location) return
+  const [lng, lat] = merchant.location.split(',').map(Number)
+  if (Number.isFinite(lng) && Number.isFinite(lat)) updateMapLocation({ lng, lat })
 }
 
 function loadAmapScript() {
@@ -218,7 +223,7 @@ async function initMap() {
   try {
     await nextTick()
     const AMap = await loadAmapScript()
-    const center = selectedLocation.value || { lng: 121.4737, lat: 31.2304 }
+    const center = selectedLocation.value || { lng: 113.93089, lat: 22.525796 }
     mapInstance = new AMap.Map('merchant-map', {
       zoom: 14,
       center: [center.lng, center.lat],
@@ -287,7 +292,6 @@ async function searchMerchants(useMapLocation = false) {
   if (!keyword) return
   searching.value = true
   searchError.value = ''
-  selectedMerchant.value = null
   try {
     const params = new URLSearchParams({ keyword, city: city.value.trim() || '全国' })
     if (useMapLocation && selectedLocation.value) {
@@ -297,6 +301,11 @@ async function searchMerchants(useMapLocation = false) {
     const data = await response.json()
     if (!response.ok) throw new Error(data.message || '门店搜索失败')
     merchants.value = data.merchants?.length ? data.merchants : []
+    selectedMerchant.value = merchants.value[0] || selectedMerchant.value
+    if (selectedMerchant.value?.location) {
+      const [lng, lat] = selectedMerchant.value.location.split(',').map(Number)
+      if (Number.isFinite(lng) && Number.isFinite(lat)) updateMapLocation({ lng, lat })
+    }
     if (!merchants.value.length) searchError.value = '没有搜索到门店，可以换个关键词试试。'
   } catch (error) {
     searchError.value = error instanceof Error ? error.message : '门店搜索失败，已保留模拟数据。'
@@ -427,49 +436,62 @@ onMounted(() => {
       </div>
       <div class="search-row">
         <input v-model="city" class="text-input city-input" placeholder="城市" />
-        <input v-model="searchKeyword" class="text-input" placeholder="搜索门店、品类或关键词，比如 咖啡" @keyup.enter="searchMerchants(false)" />
+        <input v-model="searchKeyword" class="text-input" placeholder="搜索门店、品类或关键词，比如 阿姨炒粉" @keyup.enter="searchMerchants(false)" />
         <button class="primary-btn" :disabled="searching" @click="searchMerchants(false)">{{ searching ? '搜索中' : '搜索' }}</button>
       </div>
-      <div class="map-card">
+      <div class="map-card compact-map-card">
         <div class="map-toolbar">
           <div>
             <strong>地图选址</strong>
-            <p>点击地图选择位置，再搜索附近门店。</p>
+            <p>默认定位到深圳阿姨炒粉，可点击地图微调位置。</p>
           </div>
           <div class="map-actions">
-            <button class="secondary-light-btn" :disabled="mapLoading" @click="initMap">{{ mapReady ? '刷新地图' : '加载地图' }}</button>
-            <button class="secondary-light-btn" :disabled="mapLoading" @click="useBrowserLocation">当前位置</button>
+            <button class="secondary-light-btn" :disabled="mapLoading" @click="initMap">{{ mapReady ? '已加载地图' : '加载地图' }}</button>
+            <button class="secondary-light-btn" :disabled="mapLoading" @click="searchMerchants(true)">搜附近</button>
           </div>
         </div>
-        <div id="merchant-map" class="map-container">
-          <span v-if="!mapReady && !mapLoading">点击“加载地图”后可在地图上选点</span>
+        <div id="merchant-map" class="map-container compact-map">
+          <span v-if="!mapReady && !mapLoading">默认：阿姨炒粉附近，点此区域上方按钮加载地图</span>
           <span v-if="mapLoading">地图加载中...</span>
         </div>
-        <div class="location-row">
-          <span v-if="selectedLocation">已选坐标：{{ selectedLocation.lng }}, {{ selectedLocation.lat }}</span>
-          <button class="primary-btn" :disabled="!selectedLocation || searching" @click="searchMerchants(true)">搜附近门店</button>
+        <div class="location-row compact-location-row">
+          <span v-if="selectedLocation">{{ selectedLocation.lng }}, {{ selectedLocation.lat }}</span>
+          <button class="text-btn" :disabled="mapLoading" @click="useBrowserLocation">用当前位置</button>
         </div>
       </div>
       <p v-if="mapError" class="error-tip">{{ mapError }}</p>
       <p v-if="searchError" class="error-tip">{{ searchError }}</p>
-      <div class="merchant-list">
+      <div class="merchant-section-header">
+        <strong>备选门店</strong>
+        <span>{{ merchants.length }} 个结果，已默认选择第一项</span>
+      </div>
+      <div class="merchant-list compact-merchant-list">
         <button
           v-for="merchant in merchants"
           :key="merchant.sourceId || merchant.id"
           :class="['merchant-card', { selected: selectedMerchant?.sourceId === merchant.sourceId && selectedMerchant?.id === merchant.id }]"
           @click="chooseMerchant(merchant)"
         >
-          <div>
-            <h3>{{ merchant.name }}</h3>
-            <p>{{ merchant.address }}</p>
-            <p>{{ merchant.category }}<template v-if="merchant.avgPrice"> · 参考 ¥{{ merchant.avgPrice }}</template> · {{ merchant.distance }}</p>
+          <div class="merchant-main">
+            <div>
+              <h3>{{ merchant.name }}</h3>
+              <p class="merchant-address">{{ merchant.address }}</p>
+              <p class="merchant-meta">{{ merchant.category }}<template v-if="merchant.avgPrice"> · ¥{{ merchant.avgPrice }}</template><template v-if="merchant.distance"> · {{ merchant.distance }}</template></p>
+            </div>
+            <span v-if="selectedMerchant?.sourceId === merchant.sourceId && selectedMerchant?.id === merchant.id" class="selected-badge">已选</span>
           </div>
-          <div class="tag-row">
-            <span v-for="tag in merchant.tags" :key="tag">{{ tag }}</span>
+          <div class="tag-row compact-tags">
+            <span v-for="tag in merchant.tags.slice(0, 3)" :key="tag">{{ tag }}</span>
           </div>
         </button>
       </div>
-      <button class="primary-btn full" :disabled="!selectedMerchant" @click="goTo('images')">确认门店，继续上传图片</button>
+      <div class="sticky-confirm-bar">
+        <div>
+          <strong>{{ selectedMerchant?.name || '还未选择门店' }}</strong>
+          <span>{{ selectedMerchant?.address || '请选择一个备选门店' }}</span>
+        </div>
+        <button class="primary-btn" :disabled="!selectedMerchant" @click="goTo('images')">确认门店</button>
+      </div>
     </section>
 
     <section v-if="currentStep === 'images'" class="panel">
