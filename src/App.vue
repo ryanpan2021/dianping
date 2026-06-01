@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 
 type StepKey = 'home' | 'merchant' | 'images' | 'experience' | 'result'
 type ContentType = 'review' | 'note' | 'both'
@@ -30,33 +30,6 @@ type GenerateResponse = {
   review?: string
   note?: string
   tags?: string[]
-}
-
-type MapLngLat = {
-  lng: number
-  lat: number
-}
-
-type AMapConstructor = {
-  Map: new (container: string | HTMLElement, options: Record<string, unknown>) => AMapMap
-  Marker: new (options: Record<string, unknown>) => AMapMarker
-  LngLat: new (lng: number, lat: number) => unknown
-}
-
-type AMapMap = {
-  on: (event: string, handler: (event: { lnglat: { getLng: () => number; getLat: () => number } }) => void) => void
-  setCenter: (center: [number, number]) => void
-}
-
-type AMapMarker = {
-  setMap: (map: AMapMap) => void
-  setPosition: (position: unknown) => void
-}
-
-declare global {
-  interface Window {
-    AMap?: AMapConstructor
-  }
 }
 
 const fallbackMerchants: Merchant[] = [
@@ -99,7 +72,7 @@ const steps: { key: StepKey; label: string }[] = [
   { key: 'result', label: '结果' },
 ]
 
-const visitTypes = ['正餐', '下午茶', '朋友聚会', '约会', '亲子', '独自探店']
+const visitTypes = ['晚餐', '午餐', '宵夜', '正餐', '下午茶', '朋友聚会', '约会', '亲子', '独自探店']
 const feelings = ['超预期', '还不错', '中规中矩', '有惊喜也有不足', '不太满意']
 const likeOptions = ['味道', '环境', '服务', '性价比', '出片', '位置方便', '菜品创意']
 const weakOptions = ['没有', '排队久', '上菜慢', '偏贵', '服务一般', '环境吵', '分量少']
@@ -121,16 +94,9 @@ const searching = ref(false)
 const generating = ref(false)
 const searchError = ref('')
 const generateError = ref('')
-const selectedLocation = ref<MapLngLat | null>({ lng: 113.93089, lat: 22.525796 })
-const mapReady = ref(false)
-const mapLoading = ref(false)
-const mapError = ref('')
-let mapInstance: AMapMap | null = null
-let mapMarker: AMapMarker | null = null
-let mapLoaderPromise: Promise<AMapConstructor> | null = null
 
 const experience = reactive({
-  visitType: '下午茶',
+  visitType: '晚餐',
   orderedItems: '',
   price: '',
   overallFeeling: '还不错',
@@ -181,97 +147,10 @@ const fallbackNote = computed(() => {
 function goTo(step: StepKey) {
   currentStep.value = step
   copied.value = false
-  if (step === 'merchant') initMap()
 }
 
 function chooseMerchant(merchant: Merchant) {
   selectedMerchant.value = merchant
-  if (!merchant.location) return
-  const [lng, lat] = merchant.location.split(',').map(Number)
-  if (Number.isFinite(lng) && Number.isFinite(lat)) updateMapLocation({ lng, lat })
-}
-
-function loadAmapScript() {
-  if (window.AMap) return Promise.resolve(window.AMap)
-  if (mapLoaderPromise) return mapLoaderPromise
-  const key = import.meta.env.VITE_AMAP_JS_KEY
-  if (!key) return Promise.reject(new Error('缺少高德 JS API Key'))
-
-  mapLoaderPromise = new Promise((resolveLoad, reject) => {
-    const script = document.createElement('script')
-    script.src = `https://webapi.amap.com/maps?v=2.0&key=${key}`
-    script.async = true
-    script.onload = () => {
-      if (window.AMap) resolveLoad(window.AMap)
-      else reject(new Error('高德地图加载失败'))
-    }
-    script.onerror = () => reject(new Error('高德地图脚本加载失败'))
-    document.head.appendChild(script)
-  })
-
-  return mapLoaderPromise
-}
-
-function updateMapLocation(location: MapLngLat) {
-  selectedLocation.value = location
-  if (!window.AMap || !mapInstance || !mapMarker) return
-  const position = new window.AMap.LngLat(location.lng, location.lat)
-  mapMarker.setPosition(position)
-  mapInstance.setCenter([location.lng, location.lat])
-}
-
-async function initMap() {
-  if (mapReady.value || mapLoading.value) return
-  mapLoading.value = true
-  mapError.value = ''
-  try {
-    await nextTick()
-    const AMap = await loadAmapScript()
-    const center = selectedLocation.value || { lng: 113.93089, lat: 22.525796 }
-    mapInstance = new AMap.Map('merchant-map', {
-      zoom: 14,
-      center: [center.lng, center.lat],
-      viewMode: '2D',
-    })
-    mapMarker = new AMap.Marker({
-      position: new AMap.LngLat(center.lng, center.lat),
-      anchor: 'bottom-center',
-    })
-    mapMarker.setMap(mapInstance)
-    mapInstance.on('click', (event) => {
-      updateMapLocation({
-        lng: Number(event.lnglat.getLng().toFixed(6)),
-        lat: Number(event.lnglat.getLat().toFixed(6)),
-      })
-    })
-    mapReady.value = true
-  } catch (error) {
-    mapError.value = error instanceof Error ? error.message : '地图初始化失败'
-  } finally {
-    mapLoading.value = false
-  }
-}
-
-function useBrowserLocation() {
-  if (!navigator.geolocation) {
-    mapError.value = '当前浏览器不支持定位'
-    return
-  }
-  mapLoading.value = true
-  navigator.geolocation.getCurrentPosition(
-    (position) => {
-      updateMapLocation({
-        lng: Number(position.coords.longitude.toFixed(6)),
-        lat: Number(position.coords.latitude.toFixed(6)),
-      })
-      mapLoading.value = false
-    },
-    () => {
-      mapError.value = '定位失败，请手动点击地图选点'
-      mapLoading.value = false
-    },
-    { enableHighAccuracy: true, timeout: 8000 },
-  )
 }
 
 function toggle(list: string[], value: string) {
@@ -291,25 +170,18 @@ function toggle(list: string[], value: string) {
   list.push(value)
 }
 
-async function searchMerchants(useMapLocation = false) {
+async function searchMerchants() {
   const keyword = searchKeyword.value.trim()
   if (!keyword) return
   searching.value = true
   searchError.value = ''
   try {
     const params = new URLSearchParams({ keyword, city: city.value.trim() || '全国' })
-    if (useMapLocation && selectedLocation.value) {
-      params.set('location', `${selectedLocation.value.lng},${selectedLocation.value.lat}`)
-    }
     const response = await fetch(`/api/poi/search?${params}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data.message || '门店搜索失败')
     merchants.value = data.merchants?.length ? data.merchants : []
     selectedMerchant.value = merchants.value[0] || selectedMerchant.value
-    if (selectedMerchant.value?.location) {
-      const [lng, lat] = selectedMerchant.value.location.split(',').map(Number)
-      if (Number.isFinite(lng) && Number.isFinite(lat)) updateMapLocation({ lng, lat })
-    }
     if (!merchants.value.length) searchError.value = '没有搜索到门店，可以换个关键词试试。'
   } catch (error) {
     searchError.value = error instanceof Error ? error.message : '门店搜索失败，已保留模拟数据。'
@@ -373,7 +245,7 @@ function handleImageUpload(event: Event) {
       id: Date.now() + Math.random(),
       name: file.name,
       url,
-      analysis: '正在调用大模型识别图片内容...',
+      analysis: '正在调用 AI 识别图片内容...',
       analyzing: true,
     }
     images.value.push(image)
@@ -404,13 +276,13 @@ async function generate() {
       }),
     })
     const data = await response.json() as GenerateResponse & { message?: string }
-    if (!response.ok) throw new Error(data.message || '大模型生成失败')
+    if (!response.ok) throw new Error(data.message || 'AI 生成失败')
     titleDraft.value = data.title || fallbackTitle.value
     reviewDraft.value = data.review || fallbackReview.value
     noteDraft.value = data.note || fallbackNote.value
     generatedTags.value = data.tags || []
   } catch (error) {
-    generateError.value = error instanceof Error ? error.message : '大模型生成失败，已使用本地兜底草稿。'
+    generateError.value = error instanceof Error ? error.message : 'AI 生成失败，已使用本地兜底草稿。'
     titleDraft.value = fallbackTitle.value
     reviewDraft.value = fallbackReview.value
     noteDraft.value = fallbackNote.value
@@ -427,9 +299,6 @@ async function copyText(text: string) {
   copied.value = true
 }
 
-onMounted(() => {
-  if (currentStep.value === 'merchant') initMap()
-})
 </script>
 
 <template>
@@ -464,7 +333,7 @@ onMounted(() => {
         </article>
         <article>
           <strong>2. 上传图片</strong>
-          <p>当前先做本地预览和简单素材摘要，后续可接入多模态识图。</p>
+          <p>上传后立即调用 AI 识别图片内容，提取菜品、环境、菜单等可写素材。</p>
         </article>
         <article>
           <strong>3. 填写体验</strong>
@@ -472,7 +341,7 @@ onMounted(() => {
         </article>
         <article>
           <strong>4. AI 生成</strong>
-          <p>通过本地后端代理调用 ChatGPT 兼容接口，生成可编辑草稿。</p>
+          <p>通过本地后端代理调用 AI，生成可编辑草稿。</p>
         </article>
       </div>
     </section>
@@ -487,30 +356,9 @@ onMounted(() => {
       </div>
       <div class="search-row">
         <input v-model="city" class="text-input city-input" placeholder="城市" />
-        <input v-model="searchKeyword" class="text-input" placeholder="搜索门店、品类或关键词，比如 阿姨炒粉" @keyup.enter="searchMerchants(false)" />
-        <button class="primary-btn" :disabled="searching" @click="searchMerchants(false)">{{ searching ? '搜索中' : '搜索' }}</button>
+        <input v-model="searchKeyword" class="text-input" placeholder="搜索门店、品类或关键词，比如 阿姨炒粉" @keyup.enter="searchMerchants" />
+        <button class="primary-btn" :disabled="searching" @click="searchMerchants">{{ searching ? '搜索中' : '搜索' }}</button>
       </div>
-      <div class="map-card compact-map-card">
-        <div class="map-toolbar">
-          <div>
-            <strong>地图选址</strong>
-            <p>默认定位到深圳阿姨炒粉，可点击地图微调位置。</p>
-          </div>
-          <div class="map-actions">
-            <button class="secondary-light-btn" :disabled="mapLoading" @click="initMap">{{ mapReady ? '已加载地图' : '加载地图' }}</button>
-            <button class="secondary-light-btn" :disabled="mapLoading" @click="searchMerchants(true)">搜附近</button>
-          </div>
-        </div>
-        <div id="merchant-map" class="map-container compact-map">
-          <span v-if="!mapReady && !mapLoading">默认：阿姨炒粉附近，点此区域上方按钮加载地图</span>
-          <span v-if="mapLoading">地图加载中...</span>
-        </div>
-        <div class="location-row compact-location-row">
-          <span v-if="selectedLocation">{{ selectedLocation.lng }}, {{ selectedLocation.lat }}</span>
-          <button class="text-btn" :disabled="mapLoading" @click="useBrowserLocation">用当前位置</button>
-        </div>
-      </div>
-      <p v-if="mapError" class="error-tip">{{ mapError }}</p>
       <p v-if="searchError" class="error-tip">{{ searchError }}</p>
       <div class="merchant-section-header">
         <strong>备选门店</strong>
@@ -555,7 +403,7 @@ onMounted(() => {
       </div>
       <label class="upload-box">
         <input type="file" multiple accept="image/*" @change="handleImageUpload" />
-        <span>点击上传图片，上传后会立即调用大模型识别图片内容</span>
+        <span>点击上传图片，上传后会立即调用 AI 识别图片内容</span>
       </label>
       <div v-if="images.length" class="image-grid">
         <article v-for="image in images" :key="image.id" class="image-card">
@@ -652,7 +500,7 @@ onMounted(() => {
         </label>
       </div>
 
-      <button class="primary-btn full" :disabled="!canGenerate" @click="generate">{{ generating ? '生成中...' : '调用大模型生成草稿' }}</button>
+      <button class="primary-btn full" :disabled="!canGenerate" @click="generate">{{ generating ? '生成中...' : '调用 AI 生成草稿' }}</button>
     </section>
 
     <section v-if="currentStep === 'result'" class="panel">
