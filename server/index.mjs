@@ -80,11 +80,30 @@ function buildImagePrompt(fileName) {
 要求：
 1. 只描述图片中能明确看到的内容。
 2. 不要编造品牌、门店名、价格、口味、服务体验。
-3. 如果无法判断菜名，请用通用描述。
+3. 如果无法判断具体名称，请用通用描述。
 4. 输出一段 60 到 120 字的中文描述，口吻客观自然。
-5. 可以包含：菜品/饮品/环境/菜单/门头/氛围/适合写作角度。
+5. 可以包含：菜品/饮品/项目/环境/菜单/门头/氛围/演出现场/景区视角/适合写作角度。
 
 图片文件名：${fileName || '未命名图片'}`
+}
+
+function buildMerchantInsightPrompt(payload) {
+  return `你是一个门店/体验点评素材分析助手。请基于搜索工具返回的公开信息，提炼与该门店或体验相关的核心体验评价素材。
+
+请输出严格 JSON，不要输出 Markdown，不要输出解释。JSON 格式如下：
+{
+  "summary": "一段 80 到 160 字的核心体验评价摘要，如果公开信息不足则为空字符串",
+  "highlights": ["核心点1", "核心点2", "核心点3"]
+}
+
+要求：
+1. 只保留体验、评价、氛围、服务、排队、项目特色、适合人群等可作为后续写作素材的信息。
+2. 不要编造搜索结果中没有的信息。
+3. 如果没有有效体验评价内容，summary 返回空字符串，highlights 返回空数组。
+4. 内容要克制客观，不要直接生成最终点评。
+
+素材：
+${JSON.stringify(payload, null, 2)}`
 }
 
 function buildPrompt(payload) {
@@ -109,6 +128,76 @@ function buildPrompt(payload) {
 
 素材：
 ${JSON.stringify(payload, null, 2)}`
+}
+
+async function callChatCompletion(messages, temperature = 0.3, timeout = 60000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+  try {
+    const response = await fetch(`${openaiBaseUrl}/chat/completions`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${openaiApiKey}`,
+      },
+      body: JSON.stringify({
+        model: openaiModel,
+        temperature,
+        messages,
+      }),
+    })
+    const text = await response.text()
+    let data = {}
+    try {
+      data = text ? JSON.parse(text) : {}
+    } catch {
+      data = { error: { message: text || '大模型返回格式异常' } }
+    }
+    return { response, data }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function getMessageText(message) {
+  const content = message?.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === 'string') return item
+        if (typeof item?.text === 'string') return item.text
+        if (typeof item?.content === 'string') return item.content
+        if (typeof item?.text?.value === 'string') return item.text.value
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  if (typeof content?.text === 'string') return content.text
+  if (typeof content?.text?.value === 'string') return content.text.value
+  if (typeof message?.reasoning_content === 'string') return message.reasoning_content
+  return ''
+}
+
+function getOutputText(output) {
+  if (typeof output === 'string') return output
+  if (!Array.isArray(output)) return ''
+  return output
+    .map((item) => {
+      if (typeof item === 'string') return item
+      if (typeof item?.content === 'string') return item.content
+      if (Array.isArray(item?.content)) return getOutputText(item.content)
+      if (typeof item?.text === 'string') return item.text
+      return ''
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function getChoiceText(data) {
+  return getMessageText(data.choices?.[0]?.message) || data.choices?.[0]?.text || data.output_text || getOutputText(data.output) || getOutputText(data.content) || ''
 }
 
 async function searchPoi(req, res) {
@@ -151,67 +240,107 @@ async function analyzeImage(req, res) {
     return sendJson(res, 400, { message: '缺少有效图片数据' })
   }
 
-  const response = await fetch(`${openaiBaseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openaiApiKey}`,
+  const { response, data } = await callChatCompletion([
+    {
+      role: 'system',
+      content: '你是一个图片理解助手，请直接输出中文图片观察结果，不要输出 JSON。',
     },
-    body: JSON.stringify({
-      model: openaiModel,
-      temperature: 0.2,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: buildImagePrompt(fileName) },
-            { type: 'image_url', image_url: { url: image } },
-          ],
-        },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: buildImagePrompt(fileName) },
+        { type: 'image_url', image_url: { url: image, detail: 'low' } },
       ],
-    }),
-  })
-
-  const data = await response.json()
+    },
+  ], 0.2, 60000)
   if (!response.ok) {
     return sendJson(res, response.status, { message: data.error?.message || '图片识别失败' })
   }
 
-  const analysis = data.choices?.[0]?.message?.content?.trim() || '图片已上传，但未识别到明确内容。'
+  const analysis = getChoiceText(data).trim() || '图片已上传，但未识别到明确内容。'
   sendJson(res, 200, { analysis })
+}
+
+async function analyzeMerchantInsights(req, res) {
+  if (!amapKey) return sendJson(res, 500, { message: '缺少高德 Web 服务 Key' })
+  if (!openaiBaseUrl || !openaiApiKey) return sendJson(res, 500, { message: '缺少大模型接口配置' })
+  const body = await readBody(req)
+  const merchant = body.merchant || {}
+  const city = body.city || '全国'
+  const keyword = [merchant.name, merchant.category, '评价 体验'].filter(Boolean).join(' ')
+  if (!merchant.name) return sendJson(res, 200, { summary: '', highlights: [] })
+
+  const amapUrl = new URL('https://restapi.amap.com/v3/place/text')
+  amapUrl.searchParams.set('key', amapKey)
+  amapUrl.searchParams.set('keywords', keyword)
+  amapUrl.searchParams.set('children', '0')
+  amapUrl.searchParams.set('offset', '10')
+  amapUrl.searchParams.set('page', '1')
+  amapUrl.searchParams.set('extensions', 'all')
+  amapUrl.searchParams.set('city', city)
+
+  const searchResponse = await fetch(amapUrl)
+  const searchData = await searchResponse.json()
+  if (searchData.status !== '1') {
+    return sendJson(res, 200, { summary: '', highlights: [] })
+  }
+
+  const searchResults = (searchData.pois || []).slice(0, 8).map((poi) => ({
+    name: poi.name || '',
+    address: poi.address || '',
+    type: poi.type || '',
+    rating: poi.biz_ext?.rating || '',
+    cost: poi.biz_ext?.cost || '',
+    tag: poi.tag || '',
+    photos: (poi.photos || []).slice(0, 3).map((photo) => ({ title: photo.title || '' })),
+  }))
+
+  const { response, data } = await callChatCompletion([
+    {
+      role: 'system',
+      content: '你是一个帮助用户筛选公开体验评价素材的中文分析助手。你必须输出严格 JSON。',
+    },
+    {
+      role: 'user',
+      content: buildMerchantInsightPrompt({ merchant, searchResults }),
+    },
+  ], 0.2)
+
+  if (!response.ok) {
+    return sendJson(res, response.status, { message: data.error?.message || '门店体验素材分析失败' })
+  }
+
+  const content = getChoiceText(data)
+  const cleaned = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim()
+  try {
+    const parsed = JSON.parse(cleaned)
+    sendJson(res, 200, {
+      summary: parsed.summary || '',
+      highlights: Array.isArray(parsed.highlights) ? parsed.highlights.filter(Boolean).slice(0, 6) : [],
+    })
+  } catch {
+    sendJson(res, 200, { summary: '', highlights: [] })
+  }
 }
 
 async function generateContent(req, res) {
   if (!openaiBaseUrl || !openaiApiKey) return sendJson(res, 500, { message: '缺少大模型接口配置' })
   const body = await readBody(req)
-  const response = await fetch(`${openaiBaseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openaiApiKey}`,
+  const { response, data } = await callChatCompletion([
+    {
+      role: 'system',
+      content: '你是一个帮助用户整理真实探店体验的中文写作助手。你必须输出严格 JSON。',
     },
-    body: JSON.stringify({
-      model: openaiModel,
-      temperature: 0.7,
-      messages: [
-        {
-          role: 'system',
-          content: '你是一个帮助用户整理真实探店体验的中文写作助手。你必须输出严格 JSON。',
-        },
-        {
-          role: 'user',
-          content: buildPrompt(body),
-        },
-      ],
-    }),
-  })
-
-  const data = await response.json()
+    {
+      role: 'user',
+      content: buildPrompt(body),
+    },
+  ], 0.7)
   if (!response.ok) {
     return sendJson(res, response.status, { message: data.error?.message || '大模型生成失败' })
   }
 
-  const content = data.choices?.[0]?.message?.content || ''
+  const content = getChoiceText(data)
   const cleaned = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim()
   try {
     sendJson(res, 200, JSON.parse(cleaned))
@@ -230,11 +359,13 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`)
     if (req.method === 'GET' && url.pathname === '/api/poi/search') return searchPoi(req, res)
+    if (req.method === 'POST' && url.pathname === '/api/merchant/insights') return analyzeMerchantInsights(req, res)
     if (req.method === 'POST' && url.pathname === '/api/images/analyze') return analyzeImage(req, res)
     if (req.method === 'POST' && url.pathname === '/api/content/generate') return generateContent(req, res)
     sendJson(res, 404, { message: '接口不存在' })
   } catch (error) {
-    sendJson(res, 500, { message: error instanceof Error ? error.message : '服务异常' })
+    const message = error?.name === 'AbortError' ? '大模型响应超时，请稍后重试。' : error instanceof Error ? error.message : '服务异常'
+    sendJson(res, 500, { message })
   }
 })
 

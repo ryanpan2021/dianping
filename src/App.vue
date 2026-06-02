@@ -20,6 +20,7 @@ type UploadedImage = {
   id: number
   name: string
   url: string
+  file: File
   analysis: string
   analyzing: boolean
   error?: string
@@ -30,6 +31,19 @@ type GenerateResponse = {
   review?: string
   note?: string
   tags?: string[]
+}
+
+type ImageAnalyzeResponse = {
+  analysis?: string
+  result?: string
+  text?: string
+  content?: string
+  message?: string
+}
+
+type MerchantInsightResponse = {
+  summary?: string
+  highlights?: string[]
 }
 
 const fallbackMerchants: Merchant[] = [
@@ -72,11 +86,11 @@ const steps: { key: StepKey; label: string }[] = [
   { key: 'result', label: '结果' },
 ]
 
-const visitTypes = ['晚餐', '午餐', '宵夜', '正餐', '下午茶', '朋友聚会', '约会', '亲子', '独自探店']
+const visitTypes = ['晚餐', '午餐', '宵夜', '下午茶', '玩乐放松', '生活体验', '景区游览', '表演演出', '朋友聚会', '约会', '亲子', '独自体验']
 const feelings = ['超预期', '还不错', '中规中矩', '有惊喜也有不足', '不太满意']
-const likeOptions = ['味道', '环境', '服务', '性价比', '出片', '位置方便', '菜品创意']
-const weakOptions = ['没有', '排队久', '上菜慢', '偏贵', '服务一般', '环境吵', '分量少']
-const sceneOptions = ['朋友聚会', '约会', '家庭聚餐', '下午茶', '商务', '一个人吃']
+const likeOptions = ['味道', '环境', '服务', '性价比', '出片', '位置方便', '项目体验', '现场氛围', '动线安排', '互动感']
+const weakOptions = ['没有', '排队久', '等待久', '偏贵', '服务一般', '环境吵', '体验时长短', '人太多', '指引不清晰']
+const sceneOptions = ['朋友聚会', '约会', '家庭亲子', '下午茶', '商务休闲', '一个人放松', '周末玩乐', '旅行打卡', '演出观赏', '生活体验']
 
 const currentStep = ref<StepKey>('home')
 const searchKeyword = ref('阿姨炒粉')
@@ -92,8 +106,15 @@ const noteDraft = ref('')
 const generatedTags = ref<string[]>([])
 const searching = ref(false)
 const generating = ref(false)
+const fetchingMerchantInsights = ref(false)
 const searchError = ref('')
 const generateError = ref('')
+const copyError = ref('')
+const merchantInsightError = ref('')
+const merchantInsightSummary = ref('')
+const merchantInsightHighlights = ref<string[]>([])
+let merchantInsightRequestId = 0
+let merchantInsightPromise: Promise<void> | null = null
 
 const experience = reactive({
   visitType: '晚餐',
@@ -132,7 +153,8 @@ const fallbackReview = computed(() => {
   const weakText = experience.weakPoints.includes('没有') ? '没有特别明显的槽点' : `小不足是${experience.weakPoints.join('、')}`
   const extraText = experience.extra.trim() ? `另外，${experience.extra.trim()}` : ''
   const priceText = experience.price.trim() ? `这次实际消费大概 ¥${experience.price.trim()}。` : ''
-  return `这次去的是${merchant.name}，位置在${merchant.address}，属于${merchant.category}${merchant.avgPrice ? `，参考人均大概 ¥${merchant.avgPrice}` : ''}。本次是${experience.visitType}，点了${experience.orderedItems || '几样店里的单品'}。${priceText}整体感觉${experience.overallFeeling}。比较喜欢的是${experience.likedPoints.join('、')}。从上传的图片看，${imageSummary.value}。${weakText}。${extraText}整体来说，比较适合${experience.suitableScenes.join('、')}，如果刚好在附近，可以作为一个参考选择。`
+  const insightText = merchantInsightSummary.value ? `结合检索到的公开体验反馈，${merchantInsightSummary.value}。` : ''
+  return `这次去的是${merchant.name}，位置在${merchant.address}，属于${merchant.category}${merchant.avgPrice ? `，参考人均大概 ¥${merchant.avgPrice}` : ''}。本次是${experience.visitType}，体验了${experience.orderedItems || '几个比较感兴趣的项目'}。${priceText}整体感觉${experience.overallFeeling}。比较喜欢的是${experience.likedPoints.join('、')}。${insightText}从上传的图片看，${imageSummary.value}。${weakText}。${extraText}整体来说，比较适合${experience.suitableScenes.join('、')}，如果刚好在附近，可以作为一个参考选择。`
 })
 
 const fallbackNote = computed(() => {
@@ -141,7 +163,8 @@ const fallbackNote = computed(() => {
   const weakText = experience.weakPoints.includes('没有') ? '整体体验比较顺，没有特别影响感受的地方。' : `需要注意的是：${experience.weakPoints.join('、')}。`
   const extraText = experience.extra.trim() ? `\n\n个人补充：${experience.extra.trim()}` : ''
   const priceText = experience.price.trim() ? `这次实际消费大概 ¥${experience.price.trim()}。` : ''
-  return `今天分享一家${merchant.category}：${merchant.name}。\n\n店在${merchant.address}，这次是${experience.visitType}场景去的，点了${experience.orderedItems || '几样比较感兴趣的单品'}。${priceText}整体感受是${experience.overallFeeling}。\n\n我比较喜欢它的${experience.likedPoints.join('、')}。图片里能看到：${imageSummary.value}，写笔记时可以重点突出现场感和细节。\n\n${weakText}\n\n适合场景：${experience.suitableScenes.join('、')}。如果你也在附近，想找一家${merchant.category}，可以把它加入备选。${extraText}\n\n#${merchant.category} #${experience.visitType} #探店 #真实体验 #${merchant.name}`
+  const insightText = merchantInsightSummary.value ? `\n\n公开体验反馈里比较核心的信息是：${merchantInsightSummary.value}。` : ''
+  return `今天分享一家${merchant.category}：${merchant.name}。\n\n位置在${merchant.address}，这次是${experience.visitType}场景去的，体验了${experience.orderedItems || '几个比较感兴趣的项目'}。${priceText}整体感受是${experience.overallFeeling}。${insightText}\n\n我比较喜欢它的${experience.likedPoints.join('、')}。图片里能看到：${imageSummary.value}，写笔记时可以重点突出现场感和细节。\n\n${weakText}\n\n适合场景：${experience.suitableScenes.join('、')}。如果你也在附近，想找一个${merchant.category}相关体验，可以把它加入备选。${extraText}\n\n#${merchant.category} #${experience.visitType} #探店 #真实体验 #${merchant.name}`
 })
 
 function goTo(step: StepKey) {
@@ -151,6 +174,36 @@ function goTo(step: StepKey) {
 
 function chooseMerchant(merchant: Merchant) {
   selectedMerchant.value = merchant
+  merchantInsightPromise = fetchMerchantInsights(merchant)
+}
+
+async function fetchMerchantInsights(merchant: Merchant) {
+  const requestId = ++merchantInsightRequestId
+  fetchingMerchantInsights.value = true
+  merchantInsightError.value = ''
+  merchantInsightSummary.value = ''
+  merchantInsightHighlights.value = []
+  try {
+    const response = await fetch('/api/merchant/insights', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ merchant, city: city.value.trim() || '全国' }),
+    })
+    const data = await response.json() as MerchantInsightResponse & { message?: string }
+    if (requestId !== merchantInsightRequestId) return
+    if (!response.ok) throw new Error(data.message || '门店体验素材检索失败')
+    merchantInsightSummary.value = data.summary || ''
+    merchantInsightHighlights.value = data.highlights || []
+  } catch (error) {
+    if (requestId !== merchantInsightRequestId) return
+    merchantInsightError.value = error instanceof Error ? error.message : '门店体验素材检索失败，已忽略。'
+  } finally {
+    if (requestId === merchantInsightRequestId) fetchingMerchantInsights.value = false
+  }
+}
+
+function confirmMerchant() {
+  goTo('images')
 }
 
 function toggle(list: string[], value: string) {
@@ -181,13 +234,30 @@ async function searchMerchants() {
     const data = await response.json()
     if (!response.ok) throw new Error(data.message || '门店搜索失败')
     merchants.value = data.merchants?.length ? data.merchants : []
-    selectedMerchant.value = merchants.value[0] || selectedMerchant.value
+    const firstMerchant = merchants.value[0]
+    if (firstMerchant) chooseMerchant(firstMerchant)
     if (!merchants.value.length) searchError.value = '没有搜索到门店，可以换个关键词试试。'
   } catch (error) {
     searchError.value = error instanceof Error ? error.message : '门店搜索失败，已保留模拟数据。'
     merchants.value = fallbackMerchants
   } finally {
     searching.value = false
+  }
+}
+
+async function fetchJsonWithTimeout<T>(url: string, options: RequestInit, timeout = 70000): Promise<T> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeout)
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal })
+    const data = await response.json() as T & { message?: string }
+    if (!response.ok) throw new Error(data.message || '请求失败')
+    return data
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw new Error('AI 识别超时，请稍后重试或换一张更小的图片。')
+    throw error
+  } finally {
+    window.clearTimeout(timer)
   }
 }
 
@@ -217,23 +287,34 @@ async function compressImage(file: File) {
   return canvas.toDataURL('image/jpeg', 0.78)
 }
 
+function updateImage(id: number, patch: Partial<UploadedImage>) {
+  images.value = images.value.map((image) => (image.id === id ? { ...image, ...patch } : image))
+}
+
 async function analyzeUploadedImage(image: UploadedImage, file: File) {
+  updateImage(image.id, { analyzing: true, error: undefined, analysis: '正在压缩图片...' })
   try {
     const compressedImage = await compressImage(file)
-    const response = await fetch('/api/images/analyze', {
+    updateImage(image.id, { analysis: '正在调用 AI 识别图片内容...' })
+    const data = await fetchJsonWithTimeout<ImageAnalyzeResponse>('/api/images/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fileName: file.name, image: compressedImage }),
-    })
-    const data = await response.json() as { analysis?: string; message?: string }
-    if (!response.ok) throw new Error(data.message || '图片识别失败')
-    image.analysis = data.analysis || '图片已上传，但未识别到明确内容。'
+    }, 70000)
+    updateImage(image.id, { analysis: data.analysis || data.result || data.text || data.content || '图片已上传，但未识别到明确内容。' })
   } catch (error) {
-    image.error = error instanceof Error ? error.message : '图片识别失败'
-    image.analysis = '图片已上传，但识别失败。你可以在补充体验里手动描述这张图。'
+    updateImage(image.id, {
+      error: error instanceof Error ? error.message : '图片识别失败',
+      analysis: '图片已上传，但识别失败。你可以在补充体验里手动描述这张图。',
+    })
   } finally {
-    image.analyzing = false
+    updateImage(image.id, { analyzing: false })
   }
+}
+
+function retryAnalyzeImage(id: number) {
+  const image = images.value.find((item) => item.id === id)
+  if (image) analyzeUploadedImage(image, image.file)
 }
 
 function handleImageUpload(event: Event) {
@@ -245,10 +326,11 @@ function handleImageUpload(event: Event) {
       id: Date.now() + Math.random(),
       name: file.name,
       url,
-      analysis: '正在调用 AI 识别图片内容...',
+      file,
+      analysis: '等待识别...',
       analyzing: true,
     }
-    images.value.push(image)
+    images.value = [...images.value, image]
     analyzeUploadedImage(image, file)
   })
   input.value = ''
@@ -262,6 +344,7 @@ function removeImage(id: number) {
 
 async function generate() {
   if (!selectedMerchant.value) return
+  if (merchantInsightPromise) await merchantInsightPromise
   generating.value = true
   generateError.value = ''
   try {
@@ -272,6 +355,10 @@ async function generate() {
         merchant: selectedMerchant.value,
         images: images.value.map((image) => ({ name: image.name, analysis: image.analysis, status: image.error ? '识别失败' : '已识别' })),
         imageSummary: imageSummary.value,
+        merchantInsights: {
+          summary: merchantInsightSummary.value,
+          highlights: merchantInsightHighlights.value,
+        },
         experience,
       }),
     })
@@ -295,8 +382,27 @@ async function generate() {
 }
 
 async function copyText(text: string) {
-  await navigator.clipboard.writeText(text)
-  copied.value = true
+  copyError.value = ''
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.left = '-9999px'
+      textarea.style.top = '0'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      const success = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      if (!success) throw new Error('复制失败')
+    }
+    copied.value = true
+  } catch {
+    copyError.value = '复制失败，请手动选中文本复制。'
+  }
 }
 
 </script>
@@ -329,11 +435,11 @@ async function copyText(text: string) {
       <div class="feature-grid">
         <article>
           <strong>1. 选择门店</strong>
-          <p>通过后端代理调用高德 Web 服务搜索真实 POI，前端不会暴露地图 Key。</p>
+          <p>通过后端代理调用高德 Web 服务搜索真实 POI。</p>
         </article>
         <article>
           <strong>2. 上传图片</strong>
-          <p>上传后立即调用 AI 识别图片内容，提取菜品、环境、菜单等可写素材。</p>
+          <p>上传后立即调用 AI 识别图片内容，提取项目、环境、菜单、现场氛围等可写素材。</p>
         </article>
         <article>
           <strong>3. 填写体验</strong>
@@ -384,12 +490,21 @@ async function copyText(text: string) {
           </div>
         </button>
       </div>
+      <p v-if="fetchingMerchantInsights" class="hint-line">正在后台提取公开体验素材，请稍等（不影响继续下一步）</p>
+      <p v-if="merchantInsightError" class="error-tip">{{ merchantInsightError }}</p>
+      <div v-if="merchantInsightSummary" class="material-summary">
+        <strong>已提取公开体验素材</strong>
+        <p>{{ merchantInsightSummary }}</p>
+        <div v-if="merchantInsightHighlights.length" class="tag-row compact-tags">
+          <span v-for="item in merchantInsightHighlights" :key="item">{{ item }}</span>
+        </div>
+      </div>
       <div class="sticky-confirm-bar">
         <div>
           <strong>{{ selectedMerchant?.name || '还未选择门店' }}</strong>
           <span>{{ selectedMerchant?.address || '请选择一个备选门店' }}</span>
         </div>
-        <button class="primary-btn" :disabled="!selectedMerchant" @click="goTo('images')">确认门店</button>
+        <button class="primary-btn" :disabled="!selectedMerchant" @click="confirmMerchant">确认门店</button>
       </div>
     </section>
 
@@ -413,10 +528,11 @@ async function copyText(text: string) {
             <p :class="{ 'analyzing-text': image.analyzing }">{{ image.analysis }}</p>
             <p v-if="image.error" class="image-error-tip">{{ image.error }}</p>
             <button class="text-btn" @click="removeImage(image.id)">删除</button>
+            <button v-if="image.error" class="text-btn" @click="retryAnalyzeImage(image.id)">重新识别</button>
           </div>
         </article>
       </div>
-      <div v-if="images.length" class="image-material-summary">
+      <div v-if="images.length" class="material-summary">
         <strong>图片素材摘要</strong>
         <p>{{ imageSummary }}</p>
       </div>
@@ -445,8 +561,8 @@ async function copyText(text: string) {
           </select>
         </label>
         <label>
-          点了什么 *
-          <input v-model="experience.orderedItems" class="text-input" placeholder="例如：拿铁、巴斯克蛋糕" />
+          体验了什么 *
+          <input v-model="experience.orderedItems" class="text-input" placeholder="例如：拿铁、巴斯克蛋糕、密室主题、景区路线、演出曲目" />
         </label>
         <label>
           实际消费
@@ -477,7 +593,7 @@ async function copyText(text: string) {
 
       <label>
         其他补充
-        <textarea v-model="experience.extra" class="text-area" placeholder="比如排队情况、服务、停车、口味偏好等"></textarea>
+        <textarea v-model="experience.extra" class="text-area" placeholder="比如排队情况、服务、停车、口味偏好、游玩动线、演出视角、项目时长等"></textarea>
       </label>
 
       <div class="form-grid settings-grid">
@@ -530,6 +646,7 @@ async function copyText(text: string) {
         <button class="secondary-btn" @click="copyText(reviewDraft)">复制点评</button>
       </article>
       <p v-if="copied" class="success-tip">已复制到剪贴板，请确认内容真实准确后再发布。</p>
+      <p v-if="copyError" class="error-tip">{{ copyError }}</p>
       <div class="safe-tip">本工具仅用于整理真实探店体验，生成内容为草稿，请用户确认后发布。</div>
     </section>
   </main>

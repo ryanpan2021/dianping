@@ -313,6 +313,13 @@ h3 {
   line-height: 1.5;
 }
 
+.hint-line {
+  margin: 12px 0 0;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .merchant-card {
   width: 100%;
   padding: 12px;
@@ -470,15 +477,15 @@ h3 {
   font-size: 12px;
 }
 
-.image-material-summary {
+.material-summary {
   margin-top: 14px;
   border: 1px solid #f1e0c9;
   border-radius: 18px;
-  padding: 12px;
+  padding: 14px;
   background: #fffaf4;
 }
 
-.image-material-summary p {
+.material-summary p {
   margin: 6px 0 0;
   color: #6b7280;
   font-size: 14px;
