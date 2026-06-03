@@ -183,6 +183,65 @@ h3 {
   background: #fffbeb;
 }
 
+.step-item.locked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.step-block-tip {
+  margin: 8px 2px 0;
+  text-align: center;
+}
+
+.choice-hint {
+  margin-left: 8px;
+  color: #b08968;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.recommend-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 10px;
+  color: #b45309;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.recommend-chip {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px dashed #d97706;
+  color: #b45309;
+  background: #fffbeb;
+  cursor: pointer;
+}
+
+.recommend-chip.active {
+  border-style: solid;
+  color: #fff;
+  background: #d97706;
+}
+
+.result-toolbar {
+  display: flex;
+  gap: 10px;
+  margin: 4px 0 12px;
+}
+
+.result-toolbar button {
+  flex: 1;
+}
+
+.result-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .panel {
   padding: 22px;
 }

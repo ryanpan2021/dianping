@@ -75,14 +75,15 @@ function normalizePoi(poi, index) {
 }
 
 function buildImagePrompt(fileName) {
-  return `你是一个探店图片分析助手。请根据图片内容提取可用于真实探店评价和探店笔记的素材。
+  return `你是一个探店图片分析助手。请根据图片内容，提取可以直接融入第一人称探店点评/笔记的现场细节。
 
 要求：
 1. 只描述图片中能明确看到的内容。
 2. 不要编造品牌、门店名、价格、口味、服务体验。
 3. 如果无法判断具体名称，请用通用描述。
-4. 输出一段 60 到 120 字的中文描述，口吻客观自然。
-5. 可以包含：菜品/饮品/项目/环境/菜单/门头/氛围/演出现场/景区视角/适合写作角度。
+4. 用第一人称、像现场随手记录的口吻输出一段 60 到 120 字的中文描述，便于后续直接当作"我看到/我点的"素材使用。
+5. 不要出现"图中""图片显示""可以看出""根据图片"等暴露这是在描述图片的措辞，直接描述现场画面。
+6. 可以包含：菜品/饮品/项目/环境/菜单/门头/氛围/演出现场/景区视角等可写细节。
 
 图片文件名：${fileName || '未命名图片'}`
 }
@@ -93,7 +94,8 @@ function buildMerchantInsightPrompt(payload) {
 请输出严格 JSON，不要输出 Markdown，不要输出解释。JSON 格式如下：
 {
   "summary": "一段 80 到 160 字的核心体验评价摘要，如果公开信息不足则为空字符串",
-  "highlights": ["核心点1", "核心点2", "核心点3"]
+  "highlights": ["核心点1", "核心点2", "核心点3"],
+  "recommendedScenes": ["从给定场景候选中挑选最贴合的1到3个场景"]
 }
 
 要求：
@@ -101,13 +103,15 @@ function buildMerchantInsightPrompt(payload) {
 2. 不要编造搜索结果中没有的信息。
 3. 如果没有有效体验评价内容，summary 返回空字符串，highlights 返回空数组。
 4. 内容要克制客观，不要直接生成最终点评。
+5. recommendedScenes 只能从下面的场景候选中选择，最多 3 个，按贴合度排序；信息不足时返回空数组：
+${JSON.stringify(payload.sceneOptions || [])}
 
 素材：
-${JSON.stringify(payload, null, 2)}`
+${JSON.stringify({ merchant: payload.merchant, searchResults: payload.searchResults }, null, 2)}`
 }
 
 function buildPrompt(payload) {
-  return `你是一个真实、克制、自然的探店内容草稿助手。请基于用户真实输入生成内容，禁止虚构未提供的体验，禁止自动伪造好评，避免广告腔和绝对化表达。
+  return `你是一个真实探店达人，擅长用第一人称口吻分享自己的真实体验。请基于用户提供的真实素材，写出像是亲身去过、自然走心的点评和笔记。禁止虚构未提供的体验，禁止伪造好评，避免广告腔和绝对化表达。
 
 请输出严格 JSON，不要输出 Markdown，不要输出解释。JSON 格式如下：
 {
@@ -118,13 +122,16 @@ function buildPrompt(payload) {
 }
 
 写作要求：
-1. 只能使用素材中提供的信息。
-2. 如果信息不足，表达要克制，不要编造服务、口味、排队、价格。
-3. 用户选择的文风是：${payload.experience?.style || '真实自然'}。
-4. 内容类型是：${payload.experience?.contentType || 'both'}。
-5. 大众点评评价偏实用真实，探店笔记偏分享但不要过度营销。
-6. 如果用户提供不足之处，要自然写入以增强真实感。
-7. 生成内容为草稿，适合用户确认后发布。
+1. 全程用第一人称"我"的口吻写，像是自己真的去体验后随手分享，语气亲切自然、有生活气息。
+2. 只能使用素材中提供的信息；信息不足时表达要克制，不要编造服务、口味、排队、价格。
+3. 严禁出现任何暴露"机器/模板"痕迹的表达，例如："根据图片可以看出""从图片看""图片显示""根据素材""用户提供""没有选择XX""未填写""综上所述""总的来说"等。图片里的内容要自然地当成"我看到/我点的/现场的样子"来写。
+4. 用户没有提供的字段（比如没填场景、没填价格）就直接不写，不要解释"没有提供"。
+5. 用户选择的文风是：${payload.experience?.style || '真实自然'}，请贴合这个语气。
+6. 内容类型是：${payload.experience?.contentType || 'both'}。
+7. 大众点评评价偏实用真实，像在跟朋友推荐；探店笔记偏分享种草但不浮夸。
+8. 如果用户提供了不足之处，要自然、诚恳地写进去，增强真实可信感。
+9. 笔记标题要有吸引力、能勾起点击欲：可以用具体细节、情绪、小惊喜或场景感，避免"XX探店""值得收藏的XX"这类平淡套路；控制在 20 字以内，可适当用 1 个 emoji 但不要堆砌。
+10. 生成内容为草稿，适合用户确认后发布。
 
 素材：
 ${JSON.stringify(payload, null, 2)}`
@@ -267,8 +274,9 @@ async function analyzeMerchantInsights(req, res) {
   const body = await readBody(req)
   const merchant = body.merchant || {}
   const city = body.city || '全国'
+  const sceneOptions = Array.isArray(body.sceneOptions) ? body.sceneOptions : []
   const keyword = [merchant.name, merchant.category, '评价 体验'].filter(Boolean).join(' ')
-  if (!merchant.name) return sendJson(res, 200, { summary: '', highlights: [] })
+  if (!merchant.name) return sendJson(res, 200, { summary: '', highlights: [], recommendedScenes: [] })
 
   const amapUrl = new URL('https://restapi.amap.com/v3/place/text')
   amapUrl.searchParams.set('key', amapKey)
@@ -282,7 +290,7 @@ async function analyzeMerchantInsights(req, res) {
   const searchResponse = await fetch(amapUrl)
   const searchData = await searchResponse.json()
   if (searchData.status !== '1') {
-    return sendJson(res, 200, { summary: '', highlights: [] })
+    return sendJson(res, 200, { summary: '', highlights: [], recommendedScenes: [] })
   }
 
   const searchResults = (searchData.pois || []).slice(0, 8).map((poi) => ({
@@ -302,7 +310,7 @@ async function analyzeMerchantInsights(req, res) {
     },
     {
       role: 'user',
-      content: buildMerchantInsightPrompt({ merchant, searchResults }),
+      content: buildMerchantInsightPrompt({ merchant, searchResults, sceneOptions }),
     },
   ], 0.2)
 
@@ -317,9 +325,12 @@ async function analyzeMerchantInsights(req, res) {
     sendJson(res, 200, {
       summary: parsed.summary || '',
       highlights: Array.isArray(parsed.highlights) ? parsed.highlights.filter(Boolean).slice(0, 6) : [],
+      recommendedScenes: Array.isArray(parsed.recommendedScenes)
+        ? parsed.recommendedScenes.filter((scene) => sceneOptions.includes(scene)).slice(0, 3)
+        : [],
     })
   } catch {
-    sendJson(res, 200, { summary: '', highlights: [] })
+    sendJson(res, 200, { summary: '', highlights: [], recommendedScenes: [] })
   }
 }
 

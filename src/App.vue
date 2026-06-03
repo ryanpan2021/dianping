@@ -44,6 +44,7 @@ type ImageAnalyzeResponse = {
 type MerchantInsightResponse = {
   summary?: string
   highlights?: string[]
+  recommendedScenes?: string[]
 }
 
 const fallbackMerchants: Merchant[] = [
@@ -117,20 +118,39 @@ let merchantInsightRequestId = 0
 let merchantInsightPromise: Promise<void> | null = null
 
 const experience = reactive({
-  visitType: '晚餐',
+  visitType: '',
   orderedItems: '',
   price: '',
   overallFeeling: '还不错',
   likedPoints: ['环境', '出片'],
   weakPoints: ['没有'],
-  suitableScenes: ['下午茶'],
+  suitableScenes: [] as string[],
   extra: '',
   style: '真实自然',
   length: '中等',
   contentType: 'both' as ContentType,
 })
 
+const recommendedScenes = ref<string[]>([])
+
 const currentStepIndex = computed(() => steps.findIndex((step) => step.key === currentStep.value))
+const stepBlockTip = ref('')
+
+const stepReady = computed<Record<StepKey, boolean>>(() => ({
+  home: true,
+  merchant: true,
+  images: Boolean(selectedMerchant.value),
+  experience: Boolean(selectedMerchant.value),
+  result: Boolean(selectedMerchant.value && experience.orderedItems.trim()),
+}))
+
+const stepBlockReason: Record<StepKey, string> = {
+  home: '',
+  merchant: '',
+  images: '请先选择并确认门店',
+  experience: '请先选择并确认门店',
+  result: '请先选择门店并填写体验内容',
+}
 
 const imageSummary = computed(() => {
   if (!images.value.length) return '暂未上传图片'
@@ -143,8 +163,13 @@ const hasAnalyzedImages = computed(() => images.value.some((image) => image.anal
 
 const fallbackTitle = computed(() => {
   if (!selectedMerchant.value) return ''
+  const merchant = selectedMerchant.value
   const scene = experience.suitableScenes[0] || experience.visitType
-  return `${scene}可以收藏的${selectedMerchant.value.category}：${selectedMerchant.value.name}`
+  const like = experience.likedPoints[0] || ''
+  if (scene && like) return `${scene}藏了家${like}在线的${merchant.category}`
+  if (like) return `这家${merchant.category}的${like}真的可以`
+  if (scene) return `${scene}被这家${merchant.category}惊喜到了`
+  return `悄悄分享一家好逛的${merchant.category}`
 })
 
 const fallbackReview = computed(() => {
@@ -153,8 +178,11 @@ const fallbackReview = computed(() => {
   const weakText = experience.weakPoints.includes('没有') ? '没有特别明显的槽点' : `小不足是${experience.weakPoints.join('、')}`
   const extraText = experience.extra.trim() ? `另外，${experience.extra.trim()}` : ''
   const priceText = experience.price.trim() ? `这次实际消费大概 ¥${experience.price.trim()}。` : ''
-  const insightText = merchantInsightSummary.value ? `结合检索到的公开体验反馈，${merchantInsightSummary.value}。` : ''
-  return `这次去的是${merchant.name}，位置在${merchant.address}，属于${merchant.category}${merchant.avgPrice ? `，参考人均大概 ¥${merchant.avgPrice}` : ''}。本次是${experience.visitType}，体验了${experience.orderedItems || '几个比较感兴趣的项目'}。${priceText}整体感觉${experience.overallFeeling}。比较喜欢的是${experience.likedPoints.join('、')}。${insightText}从上传的图片看，${imageSummary.value}。${weakText}。${extraText}整体来说，比较适合${experience.suitableScenes.join('、')}，如果刚好在附近，可以作为一个参考选择。`
+  const insightText = merchantInsightSummary.value ? `${merchantInsightSummary.value}。` : ''
+  const visitText = experience.visitType ? `这次是${experience.visitType}过来的，` : ''
+  const sceneText = experience.suitableScenes.length ? `个人觉得挺适合${experience.suitableScenes.join('、')}，` : ''
+  const imageText = imageSummary.value ? `现场${imageSummary.value}。` : ''
+  return `${visitText}去了${merchant.name}，在${merchant.address}，属于${merchant.category}${merchant.avgPrice ? `，人均大概 ¥${merchant.avgPrice}` : ''}。点了${experience.orderedItems || '几样想试的'}。${priceText}整体感觉${experience.overallFeeling}，最喜欢的是${experience.likedPoints.join('、')}。${insightText}${imageText}${weakText}。${extraText}${sceneText}如果刚好在附近，可以去试试。`
 })
 
 const fallbackNote = computed(() => {
@@ -163,11 +191,20 @@ const fallbackNote = computed(() => {
   const weakText = experience.weakPoints.includes('没有') ? '整体体验比较顺，没有特别影响感受的地方。' : `需要注意的是：${experience.weakPoints.join('、')}。`
   const extraText = experience.extra.trim() ? `\n\n个人补充：${experience.extra.trim()}` : ''
   const priceText = experience.price.trim() ? `这次实际消费大概 ¥${experience.price.trim()}。` : ''
-  const insightText = merchantInsightSummary.value ? `\n\n公开体验反馈里比较核心的信息是：${merchantInsightSummary.value}。` : ''
-  return `今天分享一家${merchant.category}：${merchant.name}。\n\n位置在${merchant.address}，这次是${experience.visitType}场景去的，体验了${experience.orderedItems || '几个比较感兴趣的项目'}。${priceText}整体感受是${experience.overallFeeling}。${insightText}\n\n我比较喜欢它的${experience.likedPoints.join('、')}。图片里能看到：${imageSummary.value}，写笔记时可以重点突出现场感和细节。\n\n${weakText}\n\n适合场景：${experience.suitableScenes.join('、')}。如果你也在附近，想找一个${merchant.category}相关体验，可以把它加入备选。${extraText}\n\n#${merchant.category} #${experience.visitType} #探店 #真实体验 #${merchant.name}`
+  const insightText = merchantInsightSummary.value ? `\n\n${merchantInsightSummary.value}。` : ''
+  const visitText = experience.visitType ? `这次是${experience.visitType}过来的，` : ''
+  const sceneText = experience.suitableScenes.length ? `\n\n适合场景：${experience.suitableScenes.join('、')}。` : ''
+  const visitTag = experience.visitType ? ` #${experience.visitType}` : ''
+  const imageText = imageSummary.value ? `现场${imageSummary.value}。` : ''
+  return `${visitText}去了${merchant.name}，在${merchant.address}。点了${experience.orderedItems || '几样想试的'}，${priceText}整体感受是${experience.overallFeeling}。${insightText}\n\n最喜欢的是它的${experience.likedPoints.join('、')}。${imageText}\n\n${weakText}${sceneText}\n\n要是你也在附近，想找一家${merchant.category}，可以把它加进备选。${extraText}\n\n#${merchant.category}${visitTag} #探店 #真实体验 #${merchant.name}`
 })
 
 function goTo(step: StepKey) {
+  if (!stepReady.value[step]) {
+    stepBlockTip.value = stepBlockReason[step]
+    return
+  }
+  stepBlockTip.value = ''
   currentStep.value = step
   copied.value = false
 }
@@ -183,17 +220,20 @@ async function fetchMerchantInsights(merchant: Merchant) {
   merchantInsightError.value = ''
   merchantInsightSummary.value = ''
   merchantInsightHighlights.value = []
+  recommendedScenes.value = []
   try {
     const response = await fetch('/api/merchant/insights', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ merchant, city: city.value.trim() || '全国' }),
+      body: JSON.stringify({ merchant, city: city.value.trim() || '全国', sceneOptions }),
     })
     const data = await response.json() as MerchantInsightResponse & { message?: string }
     if (requestId !== merchantInsightRequestId) return
     if (!response.ok) throw new Error(data.message || '门店体验素材检索失败')
     merchantInsightSummary.value = data.summary || ''
     merchantInsightHighlights.value = data.highlights || []
+    recommendedScenes.value = (data.recommendedScenes || []).filter((scene) => sceneOptions.includes(scene))
+    applyRecommendedScenes()
   } catch (error) {
     if (requestId !== merchantInsightRequestId) return
     merchantInsightError.value = error instanceof Error ? error.message : '门店体验素材检索失败，已忽略。'
@@ -202,9 +242,18 @@ async function fetchMerchantInsights(merchant: Merchant) {
   }
 }
 
+function applyRecommendedScenes() {
+  if (!recommendedScenes.value.length) return
+  if (experience.suitableScenes.length) return
+  experience.suitableScenes = recommendedScenes.value.slice(0, MAX_MULTI_SELECT)
+}
+
 function confirmMerchant() {
   goTo('images')
 }
+
+const MAX_MULTI_SELECT = 4
+const multiSelectTip = ref('')
 
 function toggle(list: string[], value: string) {
   const index = list.indexOf(value)
@@ -214,12 +263,18 @@ function toggle(list: string[], value: string) {
   }
   if (value === '没有' && list === experience.weakPoints) {
     list.splice(0, list.length, value)
+    multiSelectTip.value = ''
     return
   }
   if (list === experience.weakPoints) {
     const noneIndex = list.indexOf('没有')
     if (noneIndex >= 0) list.splice(noneIndex, 1)
   }
+  if (list.length >= MAX_MULTI_SELECT) {
+    multiSelectTip.value = `最多选择 ${MAX_MULTI_SELECT} 项，请先取消一项再选`
+    return
+  }
+  multiSelectTip.value = ''
   list.push(value)
 }
 
@@ -234,8 +289,11 @@ async function searchMerchants() {
     const data = await response.json()
     if (!response.ok) throw new Error(data.message || '门店搜索失败')
     merchants.value = data.merchants?.length ? data.merchants : []
-    const firstMerchant = merchants.value[0]
-    if (firstMerchant) chooseMerchant(firstMerchant)
+    selectedMerchant.value = null
+    merchantInsightSummary.value = ''
+    merchantInsightHighlights.value = []
+    recommendedScenes.value = []
+    merchantInsightPromise = null
     if (!merchants.value.length) searchError.value = '没有搜索到门店，可以换个关键词试试。'
   } catch (error) {
     searchError.value = error instanceof Error ? error.message : '门店搜索失败，已保留模拟数据。'
@@ -295,7 +353,7 @@ async function analyzeUploadedImage(image: UploadedImage, file: File) {
   updateImage(image.id, { analyzing: true, error: undefined, analysis: '正在压缩图片...' })
   try {
     const compressedImage = await compressImage(file)
-    updateImage(image.id, { analysis: '正在调用 AI 识别图片内容...' })
+    updateImage(image.id, { analysis: 'AI 智能识图中...' })
     const data = await fetchJsonWithTimeout<ImageAnalyzeResponse>('/api/images/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -353,7 +411,9 @@ async function generate() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         merchant: selectedMerchant.value,
-        images: images.value.map((image) => ({ name: image.name, analysis: image.analysis, status: image.error ? '识别失败' : '已识别' })),
+        images: images.value
+          .filter((image) => !image.error && image.analysis)
+          .map((image) => ({ name: image.name, analysis: image.analysis })),
         imageSummary: imageSummary.value,
         merchantInsights: {
           summary: merchantInsightSummary.value,
@@ -363,13 +423,13 @@ async function generate() {
       }),
     })
     const data = await response.json() as GenerateResponse & { message?: string }
-    if (!response.ok) throw new Error(data.message || 'AI 生成失败')
+    if (!response.ok) throw new Error(data.message || 'AI 智能创作失败')
     titleDraft.value = data.title || fallbackTitle.value
     reviewDraft.value = data.review || fallbackReview.value
     noteDraft.value = data.note || fallbackNote.value
     generatedTags.value = data.tags || []
   } catch (error) {
-    generateError.value = error instanceof Error ? error.message : 'AI 生成失败，已使用本地兜底草稿。'
+    generateError.value = error instanceof Error ? error.message : 'AI 智能创作失败，已使用本地兜底草稿。'
     titleDraft.value = fallbackTitle.value
     reviewDraft.value = fallbackReview.value
     noteDraft.value = fallbackNote.value
@@ -422,32 +482,34 @@ async function copyText(text: string) {
       <button
         v-for="(step, index) in steps"
         :key="step.key"
-        :class="['step-item', { active: currentStep === step.key, done: index < currentStepIndex }]"
+        :class="['step-item', { active: currentStep === step.key, done: index < currentStepIndex, locked: !stepReady[step.key] }]"
+        :disabled="!stepReady[step.key]"
         @click="goTo(step.key)"
       >
         <span>{{ index + 1 }}</span>
         {{ step.label }}
       </button>
     </nav>
+    <p v-if="stepBlockTip" class="error-tip step-block-tip">{{ stepBlockTip }}</p>
 
     <section v-if="currentStep === 'home'" class="panel">
-      <h2>第一版流程</h2>
+      <h2>四步生成走心点评</h2>
       <div class="feature-grid">
         <article>
           <strong>1. 选择门店</strong>
-          <p>通过后端代理调用高德 Web 服务搜索真实 POI。</p>
+          <p>搜索真实门店信息，自动补充门店亮点作为创作素材。</p>
         </article>
         <article>
           <strong>2. 上传图片</strong>
-          <p>上传后立即调用 AI 识别图片内容，提取项目、环境、菜单、现场氛围等可写素材。</p>
+          <p>上传后 AI 智能识图，提取项目、环境、菜单、现场氛围等可写素材。</p>
         </article>
         <article>
           <strong>3. 填写体验</strong>
           <p>用真实感受、消费项目、优缺点约束生成内容，减少空泛和虚构。</p>
         </article>
         <article>
-          <strong>4. AI 生成</strong>
-          <p>通过本地后端代理调用 AI，生成可编辑草稿。</p>
+          <strong>4. AI 智能创作</strong>
+          <p>结合门店与图片素材，一键生成可编辑的点评和笔记草稿。</p>
         </article>
       </div>
     </section>
@@ -468,7 +530,7 @@ async function copyText(text: string) {
       <p v-if="searchError" class="error-tip">{{ searchError }}</p>
       <div class="merchant-section-header">
         <strong>备选门店</strong>
-        <span>{{ merchants.length }} 个结果，已默认选择第一项</span>
+        <span>{{ merchants.length }} 个结果，请点击选择一个</span>
       </div>
       <div class="merchant-list compact-merchant-list">
         <button
@@ -518,7 +580,7 @@ async function copyText(text: string) {
       </div>
       <label class="upload-box">
         <input type="file" multiple accept="image/*" @change="handleImageUpload" />
-        <span>点击上传图片，上传后会立即调用 AI 识别图片内容</span>
+        <span>点击上传图片，上传后会自动进行 AI 智能识图</span>
       </label>
       <div v-if="images.length" class="image-grid">
         <article v-for="image in images" :key="image.id" class="image-card">
@@ -551,6 +613,7 @@ async function copyText(text: string) {
         <label>
           本次场景
           <select v-model="experience.visitType" class="text-input">
+            <option value="">不指定（可留空）</option>
             <option v-for="item in visitTypes" :key="item">{{ item }}</option>
           </select>
         </label>
@@ -571,7 +634,7 @@ async function copyText(text: string) {
       </div>
 
       <div class="choice-block">
-        <h3>重点想写</h3>
+        <h3>重点想写<span class="choice-hint">最多 4 项</span></h3>
         <div class="chip-row">
           <button v-for="item in likeOptions" :key="item" :class="['chip', { active: experience.likedPoints.includes(item) }]" @click="toggle(experience.likedPoints, item)">{{ item }}</button>
         </div>
@@ -585,11 +648,22 @@ async function copyText(text: string) {
       </div>
 
       <div class="choice-block">
-        <h3>适合场景</h3>
+        <h3>适合场景<span class="choice-hint">最多 4 项</span></h3>
+        <p v-if="recommendedScenes.length" class="recommend-line">
+          AI 推荐：
+          <button
+            v-for="item in recommendedScenes"
+            :key="item"
+            :class="['recommend-chip', { active: experience.suitableScenes.includes(item) }]"
+            @click="toggle(experience.suitableScenes, item)"
+          >{{ item }}</button>
+        </p>
         <div class="chip-row">
           <button v-for="item in sceneOptions" :key="item" :class="['chip', { active: experience.suitableScenes.includes(item) }]" @click="toggle(experience.suitableScenes, item)">{{ item }}</button>
         </div>
       </div>
+
+      <p v-if="multiSelectTip" class="error-tip">{{ multiSelectTip }}</p>
 
       <label>
         其他补充
@@ -616,7 +690,7 @@ async function copyText(text: string) {
         </label>
       </div>
 
-      <button class="primary-btn full" :disabled="!canGenerate" @click="generate">{{ generating ? '生成中...' : '调用 AI 生成草稿' }}</button>
+      <button class="primary-btn full" :disabled="!canGenerate" @click="generate">{{ generating ? 'AI 智能创作中...' : 'AI 智能创作' }}</button>
     </section>
 
     <section v-if="currentStep === 'result'" class="panel">
@@ -628,6 +702,10 @@ async function copyText(text: string) {
         <span class="hint">{{ generatedAt }}</span>
       </div>
       <p v-if="generateError" class="error-tip">{{ generateError }}</p>
+      <div class="result-toolbar">
+        <button class="secondary-btn" :disabled="generating" @click="goTo('experience')">返回修改</button>
+        <button class="primary-btn" :disabled="generating" @click="generate">{{ generating ? '重新生成中...' : '重新生成' }}</button>
+      </div>
       <div class="result-summary" v-if="selectedMerchant">
         <strong>{{ selectedMerchant.name }}</strong>
         <span>{{ selectedMerchant.category }} · {{ selectedMerchant.address }}</span>
